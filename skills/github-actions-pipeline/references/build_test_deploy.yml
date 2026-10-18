@@ -1,0 +1,472 @@
+name: "Build, Test, and Deploy"
+
+on:
+  push:
+    branches:
+      - main
+    paths-ignore:
+      - 'infrastructure/**'
+  pull_request:
+    branches:
+      - main
+    paths-ignore:
+      - 'infrastructure/**'
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  build-and-test-api:
+    name: "Build & Test API"
+    runs-on: ubuntu-latest
+    outputs:
+      api_built: ${{ steps.build-api-status.outcome }}
+
+    steps:
+      - name: Cache packages
+        uses: actions/cache@v4
+        with:
+          [Cache config settings]
+
+      - name: "Checkout repository code"
+        uses: actions/checkout@v4
+
+      - name: "Restore dependencies"
+        run: [Restore dependencies command]
+
+      - name: "Publish API"
+        id: build-api-status
+        run: [Publish API command]
+
+      - name: "Run the API in background for testing"
+        run: |
+          [API Startup command]
+          echo "API_SERVER_PID=$!" >> $GITHUB_ENV
+          echo "API started with PID: $!"
+          echo "Waiting for API to be ready..."
+          timeout 60s bash -c 'until curl --silent --fail [Localhost url and port]; do echo "Waiting for API..."; sleep 2; done' || { echo "API did not start in time!"; exit 1; }
+          echo "API is up!"
+
+      - name: "Run API Tests"
+        run: ./run_tests.sh
+        working-directory: api
+
+      - name: "Stop the API Server"
+        if: always()
+        run: |
+          if [ -n "${{ env.API_SERVER_PID }}" ]; then
+            echo "Stopping API server with PID: ${{ env.API_SERVER_PID }}"
+            kill "${{ env.API_SERVER_PID }}" || true
+          else
+            echo "API server PID not found. Could not stop explicitly."
+          fi
+
+      - name: Upload API Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: api-out
+          path: [Out path]
+  build-and-test-web:
+    name: "Build & Test Web"
+    runs-on: ubuntu-latest
+    needs: build-and-test-api
+    outputs:
+      web_built: ${{ steps.build-web-status.outcome }}
+
+    steps:
+      - name: Cache dependencies
+        uses: actions/cache@v4
+        with:
+          [Cache config settings]
+
+      - name: Cache Playwright
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/ms-playwright
+          key: ${{ runner.os }}-playwright-${{ hashFiles('web/package-lock.json') }}
+          restore-keys: ${{ runner.os }}-playwright-
+
+      - name: "Checkout repository code"
+        uses: actions/checkout@v4
+
+      - name: "Setup Node.js"
+        uses: actions/setup-node@v4
+        with:
+          node-version: [Node version]
+
+      - name: "Install React dependencies"
+        run: npm install
+        working-directory: web
+
+      - name: Install serve package
+        run: npm install -g serve
+
+      - name: "Build React application"
+        id: build-web-status
+        run: npm run build
+        working-directory: web
+
+      - name: Download API Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: api-out
+          path: [Out path]
+
+      - name: Make API binary executable
+        run: [Executable settings]
+
+      - name: "Run the API in background for Web Test"
+        id: start_api_server_for_web
+        run: |
+          [Command for running api]
+          echo "API_SERVER_PID_FOR_WEB=$!" >> $GITHUB_ENV
+          timeout 60s bash -c 'until curl --silent --fail [Localhost url and port for API]/health; do echo "Waiting for API..."; sleep 2; done' || { echo "API did not start in time for Web Test!"; exit 1; }
+          echo "API is up for Web Test!"
+
+      - name: "Serve Web App in background for testing"
+        id: start_web_server
+        run: |
+          [Command for running web]
+          echo "WEB_SERVER_PID=$!" >> $GITHUB_ENV
+          echo "Waiting for web server to be ready..."
+          timeout 60s bash -c 'until curl --silent --fail [Localhost url and port for Web]; do echo "waiting for Web..."; sleep 2; done' || { echo "Web did not start in time!"; exit 1; }
+          echo "Web app is up!"
+        working-directory: web
+
+      - name: "Install Playwright system dependencies"
+        run: npx playwright install-deps
+        working-directory: web
+
+      - name: "Install Playwright browsers"
+        run: npx playwright install
+        working-directory: web
+
+      - name: "Run Web Tests"
+        run: ./run_tests.sh
+        working-directory: web
+
+      - name: "Stop the Web Server"
+        if: always()
+        run: |
+          if [ -n "${{ env.WEB_SERVER_PID }}" ]; then
+            echo "Stopping web server with PID: ${{ env.WEB_SERVER_PID }}"
+            kill "${{ env.WEB_SERVER_PID }}" || true
+          else
+            echo "Web server PID not found. Could not stop explicitly."
+          fi
+
+      - name: "Stop the API Server for Web Test"
+        if: always()
+        run: |
+          if [ -n "${{ env.API_SERVER_PID_FOR_WEB }}" ]; then
+            echo "Stopping API server for Web Test with PID: ${{ env.API_SERVER_PID_FOR_WEB }}"
+            kill "${{ env.API_SERVER_PID_FOR_WEB }}" || true
+          else
+            echo "API server PID for Web Test not found. Could not stop explicitly."
+          fi
+  build-and-test-mobile-ios:
+    name: "Build & Test Mobile iOS"
+    runs-on: macos-latest
+    needs: build-and-test-api
+
+    steps:
+      - name: Cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.pub-cache
+          key: ${{ runner.os }}-ios-${{ hashFiles('**/pubspec.lock', '**/Podfile.lock') }}
+          restore-keys: ${{ runner.os }}-ios-
+
+      - name: "Checkout repository code"
+        uses: actions/checkout@v4
+
+      - name: "Install dependencies"
+        run: [Command for installing dependencies]
+
+      - name: "Build iOS IPA"
+        run: [Command for building iOS app]
+
+      - name: "Install coreutils"
+        run: |
+          brew install coreutils || true
+          echo "PATH=/opt/homebrew/bin:$PATH" >> $GITHUB_ENV
+          echo "PATH=/usr/local/bin:$PATH" >> $GITHUB_ENV
+          export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
+
+      - name: "Restore API dependencies for iOS Test"
+        run: [Command for restoring API dependencies]
+
+      - name: "Run the API in background for iOS Test"
+        id: start_api_server_for_ios
+        run: |
+          [Command for running api
+          echo "API_SERVER_PID_FOR_IOS=$!" >> $GITHUB_ENV
+          timeout 60s bash -c 'until curl --silent --fail [Localhost url and port of api]/health; do echo "Waiting for API..."; sleep 2; done' || { echo "API did not start in time for iOS Test!"; exit 1; }
+          echo "API is up for iOS Test!"
+
+      - name: Cleanup Simulators
+        run: |
+          xcrun simctl shutdown all || true
+          xcrun simctl erase all || true
+
+      - name: "Launch iOS Simulator"
+        id: launch_simulator
+        run: |
+          DEVICE_TYPE="iPhone [iPhone Version]"
+          IOS_SIMULATOR_NAME="${DEVICE_TYPE} Simulator for CI"
+
+          UDID=$(xcrun simctl list devices | grep "$IOS_SIMULATOR_NAME" | grep -v unavailable | awk -F '[()]' '{print $2}' | head -1)
+
+          if [ -z "$UDID" ]; then
+          RUNTIME_IDENTIFIER=$(xcrun simctl list runtimes | grep -E 'iOS' | grep -v 'unavailable' | tail -1 | awk -F ' ' '{print $NF}' | tr -d '[:space:]')
+          echo "RUNTIME_IDENTIFIER: $RUNTIME_IDENTIFIER"
+            UDID=$(xcrun simctl create "$IOS_SIMULATOR_NAME" "$DEVICE_TYPE" "$RUNTIME_IDENTIFIER")
+          echo "Created new simulator: $UDID"
+            else
+          echo "Found existing simulator: $UDID"
+            fi
+
+          # Sanity check
+          if [ -z "$UDID" ]; then
+          echo "Could not determine simulator UDID. Failing."
+          exit 1
+          fi
+
+          xcrun simctl boot "$UDID"
+          echo "Booting simulator with UDID: $UDID"
+          gtimeout 600 bash -c "until xcrun simctl bootstatus \"$UDID\" -d boot | grep -q 'booted'; do echo 'Still waiting for simulator...'; sleep 5; done"
+          xcrun simctl list devices
+          echo "Simulator is ready!"
+          echo "IOS_SIMULATOR_UDID=$UDID" >> $GITHUB_ENV
+        working-directory: mobile
+
+      - name: "Run iOS Mobile Tests"
+        run: ./run_tests.sh
+        working-directory: mobile
+        timeout-minutes: 5
+
+      - name: "Shutdown iOS Simulator"
+        if: always()
+        run: |
+          if [ -n "${{ env.IOS_SIMULATOR_UDID }}" ]; then
+            echo "Shutting down simulator with UDID: ${{ env.IOS_SIMULATOR_UDID }}"
+            xcrun simctl shutdown "${{ env.IOS_SIMULATOR_UDID }}" || true
+          else
+            echo "Simulator UDID not found. Could not shut down explicitly."
+          fi
+        working-directory: mobile
+
+      - name: "Stop the API Server for iOS Test"
+        if: always()
+        run: |
+          if [ -n "${{ env.API_SERVER_PID_FOR_IOS }}" ]; then
+            echo "Stopping API server for iOS Test with PID: ${{ env.API_SERVER_PID_FOR_IOS }}"
+            kill "${{ env.API_SERVER_PID_FOR_IOS }}" || true
+          else
+            echo "API server PID for iOS Test not found. Could not stop explicitly."
+          fi
+  build-and-test-mobile-android:
+    name: "Build & Test Mobile Android"
+    runs-on: ubuntu-latest
+    needs: build-and-test-api
+
+    steps:
+      - name: Cache SDK and Packages
+        uses: actions/cache@v4
+        with:
+          [Cache config settings]
+
+      - name: Cache Gradle
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle
+            mobile/android/.gradle
+          key: ${{ runner.os }}-gradle-${{ hashFiles('**/*.gradle') }}
+          restore-keys: |
+            ${{ runner.os }}-gradle-
+
+      - name: Cache Android Emulator AVDs
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.android/avd
+            ~/.android/adb*
+            ~/.android/emu-update-last-check.ini
+            ~/.android/advancedFeatures.ini
+            ~/.android/cache
+          key: ${{ runner.os }}-avd
+
+      - name: "Checkout repository code"
+        uses: actions/checkout@v4
+
+      - name: "Install dependencies"
+        run: [Install dependencies command]
+
+      - name: "Build Android APK"
+        run: [Build androd app command]
+
+      - name: "Enable KVM"
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - name: Download API Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: api-out
+          path: [Out path]
+
+      - name: Make API binary executable
+        run: [Executable command]
+
+      - name: "Run the API in background for Android Test"
+        id: start_api_server_for_android
+        run: |
+          [Command for running api
+          echo "API_SERVER_PID_FOR_ANDROID=$!" >> $GITHUB_ENV
+          timeout 60s bash -c 'until curl --silent --fail [Localhost url and port for api]/health; do echo "Waiting for API..."; sleep 2; done' || { echo "API did not start in time for Android Test!"; exit 1; }
+          echo "API is up for Android Test!"
+
+      - name: "Launch Android Emulator and Run Tests"
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: [Android OS version]
+          target: google_apis
+          arch: x86
+          cores: 4
+          profile: [Android Phone Version]
+          emulator-options: '-no-window -no-snapshot -no-audio -no-boot-anim -no-metrics'
+          force-avd-creation: false
+          disable-animations: true
+          emulator-boot-timeout: 300
+          script: cd mobile/android && ./gradlew connectedCheck && cd ../ && ./run_tests.sh
+
+      - name: "Stop the API Server for Android Test"
+        if: always()
+        run: |
+          if [ -n "${{ env.API_SERVER_PID_FOR_ANDROID }}" ]; then
+            echo "Stopping API server for Android Test with PID: ${{ env.API_SERVER_PID_FOR_ANDROID }}"
+            kill "${{ env.API_SERVER_PID_FOR_ANDROID }}" || true
+          else
+            echo "API server PID for Android Test not found. Could not stop explicitly."
+          fi
+  build-and-push-api-docker-qa:
+    name: "Build & Push API Docker Image"
+    runs-on: ubuntu-latest
+    needs: [build-and-test-api, build-and-test-web, build-and-test-mobile-ios, build-and-test-mobile-android]
+    environment: QA
+    outputs:
+      api_image_uri: ${{ steps.set-image.outputs.API_IMAGE_URI }}
+
+    steps:
+      - name: "Checkout repository code"
+        uses: actions/checkout@v4
+
+      - name: "Configure AWS credentials"
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN_API_DEPLOY }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: "Login to Amazon ECR"
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: "Build, tag, and push API image to Amazon ECR"
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          ECR_REPOSITORY: ${{ vars.ECR_REPOSITORY_NAME }}
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG -f [Dockerfile path]/Dockerfile [API path
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
+
+      - name: "Set output image URI"
+        id: set-image
+        run: echo "API_IMAGE_URI=${{ steps.login-ecr.outputs.registry }}/${{ vars.ECR_REPOSITORY_NAME }}:${{ github.sha }}" >> $GITHUB_OUTPUT
+  deploy-api-qa:
+    name: "Deploy API to QA"
+    runs-on: ubuntu-latest
+    needs: build-and-push-api-docker-qa
+    environment: QA
+
+    steps:
+      - name: "Checkout repository code"
+        uses: actions/checkout@v4
+
+      - name: "Configure AWS credentials"
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN_API_DEPLOY }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: "Render environment-specific task definition template"
+        id: render-env-task-def
+        run: |
+          TEMP_TASK_DEF_FILE="api/ecs-task-definition-rendered.json"
+          cp api/ecs-task-definition.json "$TEMP_TASK_DEF_FILE"
+
+          sed -i "s|ECS_TASK_DEFINITION_FAMILY_PLACEHOLDER|${{ vars.ECS_API_TASK_DEFINITION_FAMILY }}|g" "$TEMP_TASK_DEF_FILE"
+          sed -i "s|ECS_LOG_GROUP_NAME_PLACEHOLDER|${{ vars.ECS_LOG_GROUP_NAME }}|g" "$TEMP_TASK_DEF_FILE"
+          sed -i "s|AWS_REGION_PLACEHOLDER|${{ vars.AWS_REGION }}|g" "$TEMP_TASK_DEF_FILE"
+          sed -i "s|ECS_TASK_CONTAINER_NAME_PLACEHOLDER|${{ vars.ECS_API_CONTAINER_NAME }}|g" "$TEMP_TASK_DEF_FILE"
+          sed -i "s|ECS_EXECUTION_ROLE_ARN_PLACEHOLDER|arn:aws:iam::${{ vars.AWS_ACCOUNT_ID }}:role/${{ vars.ECS_API_EXECUTION_ROLE_NAME }}|g" "$TEMP_TASK_DEF_FILE"
+          sed -i "s|ECS_TASK_ROLE_ARN_PLACEHOLDER|arn:aws:iam::${{ vars.AWS_ACCOUNT_ID }}:role/${{ vars.ECS_API_TASK_ROLE_NAME }}|g" "$TEMP_TASK_DEF_FILE"
+
+          echo "TEMPLATED_TASK_DEF_PATH=$TEMP_TASK_DEF_FILE" >> "$GITHUB_OUTPUT"
+
+      - name: "Fill in the new image ID in the ECS task definition"
+        id: render-task-def
+        uses: aws-actions/amazon-ecs-render-task-definition@v1
+        with:
+          task-definition: ${{ steps.render-env-task-def.outputs.TEMPLATED_TASK_DEF_PATH }}
+          container-name: ${{ vars.ECS_API_CONTAINER_NAME }}
+          image: ${{ needs.build-and-push-api-docker-qa.outputs.api_image_uri }}
+
+      - name: "Deploy Amazon ECS task definition"
+        uses: aws-actions/amazon-ecs-deploy-task-definition@v1
+        with:
+          service: ${{ vars.ECS_API_SERVICE_NAME }}
+          cluster: ${{ vars.ECS_CLUSTER_NAME }}
+          task-definition: ${{ steps.render-task-def.outputs.task-definition }}
+          wait-for-service-stability: true
+  build-and-deploy-web-qa:
+    name: "Deploy Web App to QA"
+    runs-on: ubuntu-latest
+    needs: [deploy-api-qa]
+    environment: QA
+
+    steps:
+      - name: "Checkout repository code"
+        uses: actions/checkout@v4
+
+      - name: "Setup Node.js"
+        uses: actions/setup-node@v4
+        with:
+          node-version: [Node version]
+
+      - name: "Install React dependencies"
+        run: npm install
+        working-directory: web
+
+      - name: "Build React application"
+        run: npm run build
+        working-directory: web
+
+      - name: "Configure AWS credentials"
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN_WEB_DEPLOY }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: "Deploy to S3"
+        run: |
+          aws s3 sync web/dist s3://${{ vars.S3_WEB_BUCKET_NAME }} --delete
+
+      - name: "Invalidate CloudFront cache"
+        run: |
+          aws cloudfront create-invalidation --distribution-id ${{ vars.CLOUDFRONT_WEB_DISTRIBUTION_ID }} --paths "/*"
