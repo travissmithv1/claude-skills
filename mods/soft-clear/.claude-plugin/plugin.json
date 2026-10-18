@@ -1,0 +1,1 @@
+{ "name": "soft-clear", "version": "0.1.0", "description": "Makes /clear clear the screen while keeping the session and its context", "types": "./types/index.d.ts" }

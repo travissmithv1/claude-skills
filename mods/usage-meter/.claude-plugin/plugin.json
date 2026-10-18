@@ -1,0 +1,1 @@
+{ "name": "usage-meter", "version": "0.2.0", "description": "Shows subscription rate-limit usage (5-hour and weekly) in a colored line under the prompt, in place of the hint line", "types": "./types/index.d.ts" }

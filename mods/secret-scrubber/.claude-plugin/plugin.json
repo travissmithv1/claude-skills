@@ -1,0 +1,1 @@
+{ "name": "secret-scrubber", "version": "0.1.0", "description": "Redacts secrets and API keys from tool output before Claude sees it" }
