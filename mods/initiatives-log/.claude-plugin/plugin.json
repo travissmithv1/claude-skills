@@ -1,0 +1,5 @@
+{
+  "name": "initiatives-log",
+  "version": "0.1.0",
+  "description": "Refreshes the project's initiatives memory file from the session whenever /commit-message runs, pruning entries older than 30 days"
+}
